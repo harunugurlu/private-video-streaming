@@ -23,7 +23,7 @@ This document captures the architectural principles and high-impact implementati
 ## Tradeoff Matrix
 
 - Chosen: local file storage via backend upload for MVP.
-  - Gain: fastest MVP delivery and simplest local setup for zipped submission.
+  - Gain: Faster and simpler.
   - Tradeoff: backend handles upload bandwidth; horizontal scaling is weaker than direct-to-object-storage.
 - Chosen: asynchronous processing pipeline.
   - Gain: fast API responses, resilient retries, clear progress UX.
