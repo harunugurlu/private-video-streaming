@@ -6,6 +6,7 @@ mod handlers;
 mod models;
 mod service;
 mod utils;
+mod worker;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -29,6 +30,12 @@ async fn main() {
         tokio::fs::create_dir_all(dir)
             .await
             .expect("Failed to create storage directory");
+    }
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--worker") {
+        worker::run(pool).await;
+        return;
     }
 
     let cors = CorsLayer::new()
