@@ -1,0 +1,26 @@
+# Rust
+backend/target/
+backend/data.db
+backend/data.db-wal
+backend/data.db-shm
+
+# Storage (uploaded files and HLS output)
+backend/storage/
+
+# Node / SvelteKit
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
