@@ -46,6 +46,7 @@ To avoid mixing network speed with backend performance, success is measured with
 
 - Guaranteed support (MVP): `MP4 (H.264/AAC)`.
 - Next formats (best effort): `MOV`, `WebM`.
+- Uploads with unsupported codec/container are failed with explicit processing error reasons; this is surfaced on status/share pages.
 
 ## 5) MVP Capacity Target
 

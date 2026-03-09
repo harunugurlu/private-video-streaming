@@ -18,7 +18,7 @@ This document captures the architectural principles and high-impact implementati
 - Upload path (MVP): browser multipart upload to backend API, persisted to local file storage.
 - Processing model: asynchronous background processing with status updates.
 - Playback protocol: HLS for MVP.
-- Reliability guardrail: strict idempotency for `complete-upload` and worker job consumption.
+- Reliability guardrail: strict idempotency for source-upload finalization (`PUT /api/videos/{id}/source`) and worker job consumption.
 
 ## Tradeoff Matrix
 
@@ -45,7 +45,7 @@ This document captures the architectural principles and high-impact implementati
 
 ### Core Metrics
 
-- Link issue latency (`init-upload` request start -> share link returned).
+- Link issue latency (`POST /api/videos` request start -> share link returned).
 - End-to-end time-to-stream (upload start -> stream playable).
 - Processing latency (upload completed -> processing completed).
 - Failure rate by stage (`validation`, `transcode`, `packaging`).

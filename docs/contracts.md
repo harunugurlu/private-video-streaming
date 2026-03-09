@@ -20,7 +20,7 @@ This document defines the contracts for implementation: API endpoints, worker/jo
 ### Shared Page Behavior (`/s/{token}`)
 
 - `uploading`: show upload-in-progress UI and optional progress.
-- `processing`: show current `processing_stage` and optional progress.
+- `processing`: show current `processing_stage`.
 - `playable`: initialize player with `playback.hls_url`.
 - `failed`: show failure message.
 
@@ -72,6 +72,10 @@ Purpose:
 Request content type:
 - `multipart/form-data` with single file field: `file`.
 
+Upload-size enforcement:
+- Server enforces actual uploaded size `<= 1GB` during `PUT /source`.
+- If streamed bytes exceed limit, upload is aborted and `413` is returned.
+
 Success response (200):
 
 ```json
@@ -83,8 +87,10 @@ Success response (200):
 ```
 
 Conflict/retry rules:
-- If source already uploaded (`upload_completed_at` exists): return `409 SOURCE_ALREADY_UPLOADED`.
-- If prior upload failed or is incomplete (no `upload_completed_at`): allow retry for same `video_id`.
+- If video status is `processing` or `playable`: return `409 SOURCE_ALREADY_UPLOADED`.
+- If video status is `failed`: allow re-upload for the same `video_id` (manual retry path).
+- If prior upload is incomplete: allow retry for same `video_id`.
+- For accepted retries, clear prior failure metadata and reset state to `uploading` before handling new bytes.
 
 ### 2.3 `GET /api/videos/{video_id}/status`
 
@@ -108,7 +114,7 @@ Response body (200):
 
 Notes:
 - `processing_stage`: one of `queued | probing | transcoding | packaging | publishing | null`.
-- `progress_percent`: nullable and may be coarse during processing.
+- `progress_percent`: nullable; for MVP processing is stage-based, so this is typically `null` during processing.
 
 ### 2.4 `GET /api/share/{token}`
 
@@ -146,7 +152,6 @@ Rules:
 - No cache headers for MVP.
 - Safety checks required to block path traversal.
 
-
 ### 2.6 `playback_key` Rationale
 
 - `playback_key` is a separate, unguessable public identifier used in media URLs (instead of exposing internal `video_id` values).
@@ -154,7 +159,7 @@ Rules:
 - It is stored in the `videos` table as a unique field and used to build paths like `/media/hls/{playback_key}/master.m3u8`.
 - This is hardening/obfuscation, not full authorization.
 
-## 3) Why Use Two Endpoints for Video Upload (POST /videos + PUT /videos/{id}/source)
+## 3) Why Use Two Endpoints for Video Upload (`POST /videos` + `PUT /videos/{id}/source`)
 
 - Keeps the backend lifecycle explicit.
 - Enables early validation and immediate share-link issuance before byte transfer.
@@ -184,6 +189,18 @@ Minimal job fields:
 - `last_error`
 - `idempotency_key`
 
+### Worker Runtime Policy (MVP Locked)
+
+- Run mode: same Rust project, separate worker process (`--worker`).
+- Why this was chosen: still simple to run, but cleaner than an in-process thread because API and worker crashes are isolated.
+- Worker count: `1` worker process.
+- Worker concurrency: `1` job at a time.
+- Retry policy: max `3` attempts with backoff `10s -> 30s -> 90s`.
+- Lock timeout: `15 minutes`.
+- Heartbeat: worker refreshes `locked_at` every 30-60 seconds while processing.
+- Final failure handling: delete source file immediately.
+- Processing progress mode: stage-based only (`processing_stage`), no estimated percent in MVP.
+
 ### Worker Behavior
 
 1. Claim one pending job atomically.
@@ -195,17 +212,15 @@ Minimal job fields:
 
 Failure/retry behavior:
 - Retry with backoff until `max_attempts`.
-- On final failure: set video `failed`, set `failed_at`, `failure_stage`, `failure_reason`.
+- On final failure: set video `failed`, set `failed_at`, `failure_stage`, `failure_reason`, and delete source file.
 - Enforce idempotency for `process_video` per `video_id`.
-
 
 ### Worker Topology Notes (Architecture)
 
-- MVP topology: run one worker process with one job at a time for predictable behavior with SQLite locking.
-- Queue mechanism with SQLite: polling loop (claim pending jobs in short intervals), because SQLite has no native pub/sub queue notifications.
-- Throughput model: ffmpeg does CPU-heavy work; practical throughput is primarily bounded by machine CPU, disk IO, and ffmpeg thread settings.
-- Scaling path: migrate DB queue to PostgreSQL, then increase worker process count for horizontal job processing.
-- API/worker boundary remains stable across this migration because coordination happens through queue/status contracts, not direct service calls.
+- MVP topology uses SQLite + polling for queue consumption (SQLite has no pub/sub queue notifications).
+- This is intentionally simple for local development and zipped submission.
+- Designed to scale with minimal refactor: keep same contracts, migrate queue DB to PostgreSQL, and increase worker process count.
+- Supporting more parallel jobs later will be a configuration change (`WORKER_CONCURRENCY`) plus operational tuning (CPU limits/ffmpeg threads).
 
 ## 5) Video State Machine Contract
 
@@ -220,6 +235,10 @@ Allowed transitions:
 - `processing -> playable` (successful publish)
 - `processing -> failed` (final processing failure)
 - `failed -> uploading` (manual retry path for re-upload)
+
+Notes:
+- Worker retries happen while video is still in `processing`.
+- `processing -> failed` is only for exhausted retries/final failure.
 
 Invalid transitions must be rejected.
 
@@ -239,5 +258,3 @@ Publish rule:
 - Use atomic directory rename/move from tmp to public on the same filesystem.
 - Do not expose tmp directory through HTTP.
 - No upscaling: first playable rendition target is `min(source_height, 720)`.
-
-
