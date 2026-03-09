@@ -1,4 +1,4 @@
-# Step 3 - C4 System Context and Containers
+# C4 System Context and Containers
 
 This diagram shows:
 - External actors

@@ -1,4 +1,4 @@
-# Step 2 - Architecture Principles and Tradeoffs
+# Architecture Principles and Tradeoffs
 
 ## Purpose
 
@@ -18,6 +18,9 @@ This document captures the architectural principles and high-impact implementati
 - Upload path (MVP): browser multipart upload to backend API, persisted to local file storage.
 - Processing model: asynchronous background processing with status updates.
 - Playback protocol: HLS for MVP.
+- Rendition strategy: multi-rendition HLS (720p + 360p, no upscaling) for adaptive bitrate playback.
+- Transcoding toolchain: ffmpeg for transcoding and HLS packaging, ffprobe for source validation and metadata extraction.
+- Database: SQLite for MVP — no separate process, simple deployment, sufficient write throughput for MVP capacity (5 concurrent uploads, 1 worker).
 - Reliability guardrail: strict idempotency for source-upload finalization (`PUT /api/videos/{id}/source`) and worker job consumption.
 
 ## Tradeoff Matrix
@@ -31,9 +34,23 @@ This document captures the architectural principles and high-impact implementati
 - Chosen: HLS-only playback in MVP.
   - Gain: reduced protocol complexity and faster delivery.
   - Tradeoff: broader multi-protocol compatibility deferred.
+- Chosen: multi-rendition HLS (720p + 360p) for adaptive bitrate playback.
+  - Gain: consistent playback regardless of network conditions and file size.
+  - Tradeoff: slightly longer transcoding time compared to single-rendition output.
+- Chosen: SQLite for MVP database.
+  - Gain: no separate database server, simple deployment, zero operational cost.
+  - Tradeoff: limited concurrent write performance; migrate to PostgreSQL for horizontal scaling.
 - Chosen: idempotency-first for critical events.
   - Gain: safe retries and fewer duplicate-processing failures.
   - Tradeoff: additional state guards and uniqueness constraints in backend design.
+
+## Cost Efficiency
+
+- SQLite eliminates the cost of running a separate database server.
+- Local file storage eliminates cloud storage costs during MVP operation.
+- Rust provides low memory and CPU overhead per request, reducing infrastructure requirements.
+- Single binary deployment (API and worker from the same Rust crate) minimizes operational complexity.
+- ffmpeg is open-source with no licensing cost.
 
 ## Planned Evolution After MVP
 
@@ -48,7 +65,7 @@ This document captures the architectural principles and high-impact implementati
 - Link issue latency (`POST /api/videos` request start -> share link returned).
 - End-to-end time-to-stream (upload start -> stream playable).
 - Processing latency (upload completed -> processing completed).
-- Failure rate by stage (`validation`, `transcode`, `packaging`).
+- Failure rate by stage (`probing`, `transcoding`, `publishing`).
 - State distribution and state duration (`uploading`, `processing`, `playable`, `failed`).
 
 ### Minimal Data Needed Per Video

@@ -1,4 +1,4 @@
-# Step 3 - System Contracts (API, Worker, State, Storage)
+# System Contracts (API, Worker, State, Storage)
 
 ## Purpose
 
@@ -16,6 +16,10 @@ This document defines the contracts for implementation: API endpoints, worker/jo
 - `/upload` may poll `GET /api/videos/{video_id}/status` during/after upload.
 - `/s/{token}` polls `GET /api/share/{token}` every 2-3 seconds.
 - Polling stops when status becomes `playable` or `failed`.
+
+### Upload Progress
+
+Upload progress is tracked client-side only via browser XHR/fetch progress events. The status API does not expose upload byte progress. The share page shows a generic "uploading" state for viewers who open the link during upload.
 
 ### Shared Page Behavior (`/s/{token}`)
 
@@ -57,9 +61,14 @@ Response body (201):
 }
 ```
 
+Supported formats:
+- Accepted MIME types: `video/mp4`, `video/quicktime` (MOV), `video/webm`, `video/x-msvideo` (AVI), `video/x-matroska` (MKV).
+- Accepted extensions: `.mp4`, `.mov`, `.webm`, `.avi`, `.mkv`.
+- These are guardrails; the worker's `ffprobe` step is the true validation gate.
+
 Validation errors:
 - `413` when `size_bytes > 1073741824`.
-- `415` for unsupported media type.
+- `415` for MIME type or extension outside the supported list.
 - `400` for malformed payload.
 
 ### 2.2 `PUT /api/videos/{video_id}/source`
@@ -104,7 +113,6 @@ Response body (200):
   "video_id": "vid_123",
   "status": "uploading",
   "processing_stage": null,
-  "progress_percent": null,
   "share_url": "/s/shr_abc123",
   "updated_at": "2026-03-08T12:34:56Z",
   "error_code": null,
@@ -113,8 +121,7 @@ Response body (200):
 ```
 
 Notes:
-- `processing_stage`: one of `queued | probing | transcoding | packaging | publishing | null`.
-- `progress_percent`: nullable; for MVP processing is stage-based, so this is typically `null` during processing.
+- `processing_stage`: one of `queued | probing | transcoding | publishing | null`. Set to `queued` when the job is first enqueued (in the `PUT /source` handler), before the worker picks it up. The frontend maps stages to deterministic progress-bar positions (e.g., queued ~5%, probing ~15%, transcoding ~50%, publishing ~90%).
 
 ### 2.4 `GET /api/share/{token}`
 
@@ -130,7 +137,6 @@ Response body (200):
   "title": "My video",
   "status": "processing",
   "processing_stage": "transcoding",
-  "progress_percent": null,
   "playback": {
     "hls_url": null
   },
@@ -142,7 +148,7 @@ Rules:
 - If status is not `playable`, return status payload with `playback.hls_url = null`.
 - Invalid or unknown token: `404 SHARE_NOT_FOUND`.
 
-### 2.5 `GET /media/hls/{playback_key}/{path...}`
+### 2.5 `GET /media/hls/{share_token}/{path...}`
 
 Purpose:
 - Serve published HLS files from public media directory.
@@ -152,12 +158,7 @@ Rules:
 - No cache headers for MVP.
 - Safety checks required to block path traversal.
 
-### 2.6 `playback_key` Rationale
-
-- `playback_key` is a separate, unguessable public identifier used in media URLs (instead of exposing internal `video_id` values).
-- It reduces trivial URL enumeration and decouples public playback paths from internal database IDs.
-- It is stored in the `videos` table as a unique field and used to build paths like `/media/hls/{playback_key}/master.m3u8`.
-- This is hardening/obfuscation, not full authorization.
+Note: Media URLs use the same `share_token` that identifies the video in the share page. Since anyone with the share link already receives the `hls_url` via the API, a separate media identifier adds no real security boundary. This keeps the system simpler — one unguessable token per video. Example URL: `/media/hls/shr_abc123/master.m3u8`.
 
 ## 3) Why Use Two Endpoints for Video Upload (`POST /videos` + `PUT /videos/{id}/source`)
 
@@ -198,21 +199,24 @@ Minimal job fields:
 - Retry policy: max `3` attempts with backoff `10s -> 30s -> 90s`.
 - Lock timeout: `15 minutes`.
 - Heartbeat: worker refreshes `locked_at` every 30-60 seconds while processing.
+- Job poll interval: `1 second`. Worst-case job pickup latency is ~1s, negligible relative to total processing time. SQLite handles 1 query/second trivially.
 - Final failure handling: delete source file immediately.
 - Processing progress mode: stage-based only (`processing_stage`), no estimated percent in MVP.
 
 ### Worker Behavior
 
 1. Claim one pending job atomically.
-2. Update video status to `processing` if needed.
-3. Set `processing_stage=probing`; run `ffprobe`.
-4. Set `processing_stage=transcoding`; run `ffmpeg` to produce HLS output in tmp path.
+2. Update video status to `processing` if needed. Set `processing_started_at` timestamp.
+3. Set `processing_stage=probing`; run `ffprobe` to validate source and extract metadata (duration, resolution, codecs).
+4. Set `processing_stage=transcoding`; run `ffmpeg` to produce multi-rendition HLS output in tmp path. Rendition ladder: 720p + 360p (no upscaling; skip any rendition above source resolution; if source < 360p, single rendition at source resolution).
 5. Set `processing_stage=publishing`; atomically publish tmp output to public path.
 6. Mark video `playable`, set `processing_completed_at`, and mark job done.
+7. Delete source file from `storage/originals/{video_id}/` (no longer needed after successful publish).
 
 Failure/retry behavior:
 - Retry with backoff until `max_attempts`.
-- On final failure: set video `failed`, set `failed_at`, `failure_stage`, `failure_reason`, and delete source file.
+- On final failure: set video `failed`, set `failed_at`, `failure_stage`, `failure_reason`, and delete source file (prevent disk from filling).
+- Source files are deleted on both success (step 7) and final failure.
 - Enforce idempotency for `process_video` per `video_id`.
 
 ### Worker Topology Notes (Architecture)
@@ -247,14 +251,76 @@ Invalid transitions must be rejected.
 Directory layout:
 - Source upload: `storage/originals/{video_id}/source.ext`
 - HLS tmp output: `storage/hls/_tmp/{video_id}/...`
-- HLS public output: `storage/hls/public/{playback_key}/...`
+- HLS public output: `storage/hls/public/{share_token}/...`
 
-Expected HLS artifacts:
-- `master.m3u8`
-- per rendition playlist, e.g. `720p/index.m3u8`
-- segments, e.g. `720p/seg_000.ts`
+Expected HLS artifacts (multi-rendition):
+- `master.m3u8` (variant playlist referencing all renditions)
+- `720p/index.m3u8`, `720p/seg_000.ts`, ...
+- `360p/index.m3u8`, `360p/seg_000.ts`, ...
+
+Rendition rules:
+- No upscaling: skip any rendition above source resolution.
+- If source >= 720p: produce 720p + 360p.
+- If source >= 360p but < 720p: produce 360p only.
+- If source < 360p: single rendition at source resolution.
 
 Publish rule:
 - Use atomic directory rename/move from tmp to public on the same filesystem.
 - Do not expose tmp directory through HTTP.
-- No upscaling: first playable rendition target is `min(source_height, 720)`.
+
+## 7) Database Schema
+
+SQLite stores timestamps as TEXT in ISO 8601 format. When migrating to PostgreSQL, these become `TIMESTAMPTZ` columns.
+
+### `videos` table
+
+```sql
+CREATE TABLE videos (
+    id              TEXT PRIMARY KEY,                -- prefixed, e.g. "vid_..."
+    title           TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    size_bytes      INTEGER NOT NULL,
+    mime_type       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'uploading', -- uploading | processing | playable | failed
+    share_token     TEXT UNIQUE NOT NULL,             -- prefixed, e.g. "shr_..."
+    processing_stage TEXT,                            -- queued | probing | transcoding | publishing | NULL
+    source_path     TEXT,
+    error_code      TEXT,
+    error_message   TEXT,
+    upload_initiated_at    TEXT NOT NULL,
+    upload_completed_at    TEXT,
+    processing_started_at  TEXT,
+    processing_completed_at TEXT,
+    failed_at       TEXT,
+    failure_stage   TEXT,
+    failure_reason  TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_videos_share_token ON videos(share_token);
+```
+
+### `jobs` table
+
+```sql
+CREATE TABLE jobs (
+    id              TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,                    -- e.g. "process_video"
+    video_id        TEXT NOT NULL REFERENCES videos(id),
+    source_path     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | done | failed
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    max_attempts    INTEGER NOT NULL DEFAULT 3,
+    scheduled_at    TEXT NOT NULL,
+    locked_at       TEXT,
+    worker_id       TEXT,
+    last_error      TEXT,
+    idempotency_key TEXT UNIQUE NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX idx_jobs_status_scheduled ON jobs(status, scheduled_at);
+CREATE UNIQUE INDEX idx_jobs_idempotency ON jobs(idempotency_key);
+```

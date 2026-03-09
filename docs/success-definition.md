@@ -28,8 +28,13 @@ To avoid mixing network speed with backend performance, success is measured with
 ### Playback Quality Floor
 
 - Playback starts within `2-3s` on an average home network.
-- Adaptive bitrate streaming is used to minimize buffering.
-- `720p` is acceptable as the initial quality target.
+- Multi-rendition adaptive bitrate streaming (720p + 360p, no upscaling) is used to minimize buffering and provide consistent playback regardless of network conditions.
+- `720p` is the top rendition target; `360p` is always included when source resolution allows.
+
+### Progress UX
+
+- Upload progress is reported via client-side browser events (XHR/fetch progress). No server-side upload progress tracking in MVP.
+- Processing progress is stage-based (`queued`, `probing`, `transcoding`, `publishing`). The frontend maps stages to approximate progress-bar positions for UX continuity.
 
 ### Reliability
 
@@ -44,8 +49,8 @@ To avoid mixing network speed with backend performance, success is measured with
 
 ## 4) Day-1 Format Strategy
 
-- Guaranteed support (MVP): `MP4 (H.264/AAC)`.
-- Next formats (best effort): `MOV`, `WebM`.
+- MVP supported formats: `MP4 (H.264/AAC)`, `MOV`, `WebM (VP8/VP9)`, `AVI`, `MKV`.
+- API validates by MIME type and file extension as a guardrail; `ffprobe` is the true validation gate in the worker.
 - Uploads with unsupported codec/container are failed with explicit processing error reasons; this is surfaced on status/share pages.
 
 ## 5) MVP Capacity Target
@@ -59,6 +64,7 @@ To avoid mixing network speed with backend performance, success is measured with
 - Video becomes playable after upload completion and processing; no "stream while upload is still in progress" in MVP.
 - MVP upload flow is browser -> backend API -> local file storage to keep local development and project submission simple.
 - Storage integration stays behind a clear abstraction so migration to object storage/direct upload remains straightforward after MVP.
+- Frontend is built with SvelteKit (`adapter-static`, deployed as static files) and hls.js for HLS playback.
 
 ## 7) Out of Scope (This Phase)
 
