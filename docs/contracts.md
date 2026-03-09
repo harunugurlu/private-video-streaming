@@ -36,7 +36,7 @@ Base path: `/api`
 
 Purpose:
 - Create video record before byte upload.
-- Issue share URL immediately.
+- Issue share token immediately.
 - Perform fast pre-checks using client-provided metadata.
 
 Request body:
@@ -55,7 +55,7 @@ Response body (201):
 ```json
 {
   "video_id": "vid_123",
-  "share_url": "/s/shr_abc123",
+  "share_token": "shr_abc123",
   "status": "uploading",
   "max_upload_bytes": 1073741824
 }
@@ -113,7 +113,7 @@ Response body (200):
   "video_id": "vid_123",
   "status": "uploading",
   "processing_stage": null,
-  "share_url": "/s/shr_abc123",
+  "share_token": "shr_abc123",
   "updated_at": "2026-03-08T12:34:56Z",
   "error_code": null,
   "error_message": null
@@ -163,7 +163,7 @@ Note: Media URLs use the same `share_token` that identifies the video in the sha
 ## 3) Why Use Two Endpoints for Video Upload (`POST /videos` + `PUT /videos/{id}/source`)
 
 - Keeps the backend lifecycle explicit.
-- Enables early validation and immediate share-link issuance before byte transfer.
+- Enables early validation and immediate share token issuance before byte transfer.
 - Improves failure handling with a durable `video_id` and resumable context. Video record is inserted before upload.
 - Produces cleaner status transitions/metrics (`uploading -> processing -> playable/failed`).
 - Allows future migration to direct-to-object-storage upload without redesigning lifecycle APIs.

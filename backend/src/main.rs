@@ -1,7 +1,11 @@
+mod config;
 mod db;
+mod dto;
 mod errors;
 mod handlers;
 mod models;
+mod service;
+mod utils;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -17,7 +21,6 @@ async fn main() {
 
     let pool = db::init_pool("sqlite://data.db").await;
 
-    // Ensure storage directories exist
     for dir in &[
         "storage/originals",
         "storage/hls/_tmp",
@@ -46,7 +49,7 @@ async fn main() {
         )
         .route("/api/share/{token}", get(handlers::get_share))
         .nest_service("/media/hls", ServeDir::new("storage/hls/public"))
-        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024 + 1024 * 1024)) // 1GB + 1MB overhead for multipart headers
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024 + 1024 * 1024))
         .layer(cors)
         .with_state(pool);
 

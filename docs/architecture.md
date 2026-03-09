@@ -43,7 +43,7 @@ API and Worker coordinate asynchronously through the DB-backed job queue — the
 
 ### Two-Step Upload (POST metadata + PUT bytes)
 
-Upload is split into two API calls: `POST /api/videos` creates the video record and immediately returns a shareable link, then `PUT /api/videos/{id}/source` transfers the file bytes. This enables early validation, immediate share-link issuance before the upload even starts, a durable `video_id` for failure recovery, and a clean path toward future migration to direct-to-object-storage uploads (presigned URLs) without redesigning the lifecycle API.
+Upload is split into two API calls: `POST /api/videos` creates the video record and immediately returns a share token, then `PUT /api/videos/{id}/source` transfers the file bytes. This enables early validation, immediate share token issuance before the upload even starts, a durable `video_id` for failure recovery, and a clean path toward future migration to direct-to-object-storage uploads (presigned URLs) without redesigning the lifecycle API. The frontend is responsible for constructing the shareable page URL from the token.
 
 ### Asynchronous Processing via DB-Backed Job Queue
 
@@ -73,7 +73,7 @@ Source-upload finalization (`PUT /api/videos/{id}/source`) and worker job consum
 
 Every major decision is shaped by the goal of minimizing time-to-stream:
 
-- **Immediate link issuance:** The shareable link is returned in the `POST /api/videos` response, before any bytes are uploaded. Users can share the link while the upload is still in progress.
+- **Immediate token issuance:** The share token is returned in the `POST /api/videos` response, before any bytes are uploaded. The frontend constructs the shareable page URL from this token, so users can share it while the upload is still in progress.
 - **Async processing:** The API does not block on transcoding. The upload completes, a job is enqueued, and the worker picks it up independently.
 - **No blocking flows:** Progress is always visible. The share page shows upload status, processing stage, and transitions to playback automatically.
 - **720p cap:** Limiting the top rendition to 720p reduces transcoding time compared to higher resolutions, directly lowering time-to-stream.
