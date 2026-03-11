@@ -31,7 +31,7 @@ flowchart TB
     worker -->|Read source, write/publish HLS| storage
 ```
 
-- **Web App (SvelteKit + hls.js):** Built with SvelteKit using `adapter-static` (deployed as static files). Uses hls.js for adaptive bitrate HLS playback. File-based routing handles the two app routes (`/upload` and `/s/{token}`).
+- **Web App (SvelteKit + hls.js):** Built with SvelteKit using `adapter-static` (deployed as static files). Uses hls.js for adaptive bitrate HLS playback. File-based routing handles the two app routes (`/upload` and `/watch/{token}`).
 - **API Service (Rust):** Validates uploads, manages video metadata and state, serves status/share endpoints, and enqueues processing jobs.
 - **Processing Worker (Rust + ffmpeg/ffprobe):** Runs as a separate process. Probes source files, transcodes to multi-rendition HLS, and publishes output to the public media directory.
 - **Database (SQLite):** Stores video metadata, state transitions, and the job queue. No separate database server needed.

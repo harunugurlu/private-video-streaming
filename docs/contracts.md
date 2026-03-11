@@ -9,19 +9,19 @@ This document defines the contracts for implementation: API endpoints, worker/jo
 ### Routes
 
 - `/upload`: uploader flow (create video + upload source file).
-- `/s/{token}`: shared page used by both uploader and viewers for progress + playback.
+- `/watch/{token}`: shared page used by both uploader and viewers for progress + playback.
 
 ### Polling Strategy
 
 - `/upload` may poll `GET /api/videos/{video_id}/status` during/after upload.
-- `/s/{token}` polls `GET /api/share/{token}` every 2-3 seconds.
+- `/watch/{token}` polls `GET /api/share/{token}` every 2-3 seconds.
 - Polling stops when status becomes `playable` or `failed`.
 
 ### Upload Progress
 
 Upload progress is tracked client-side only via browser XHR/fetch progress events. The status API does not expose upload byte progress. The share page shows a generic "uploading" state for viewers who open the link during upload.
 
-### Shared Page Behavior (`/s/{token}`)
+### Shared Page Behavior (`/watch/{token}`)
 
 - `uploading`: show upload-in-progress UI and optional progress.
 - `processing`: show current `processing_stage`.

@@ -128,33 +128,50 @@ If quality is too low:
 1. **Lower CRF** — e.g., CRF 23 (ffmpeg default). Produces better quality but larger files and slower encoding.
 2. **Use `-preset medium`** — slower encoding but better compression efficiency (same quality at smaller file sizes).
 
-## Future Optimization: Single-Pass Dual-Rendition
+## Single-Pass Dual-Rendition (implemented)
 
-The current per-rendition approach decodes the source once per rendition. For large files, this is measurably slower than a single-pass approach that decodes once and splits the frames into two encoding pipelines.
+For sources >= 720p, the worker uses a single ffmpeg invocation that decodes the source once and splits it into two encoding pipelines (720p + 360p). This avoids the overhead of decoding the source file twice.
 
-The single-pass command uses `-filter_complex` with `split` and `-var_stream_map`:
+### Command (with audio)
 
 ```bash
 ffmpeg -y -i input.mp4 \
-  -filter_complex "[0:v]split=2[v720][v360];[v720]scale=-2:720[out720];[v360]scale=-2:360[out360]" \
-  -map "[out720]" -map "[out360]" -map 0:a? -map 0:a? \
+  -filter_complex "[0:v]split=2[v720][v360];[v720]scale=-2:720[out720];[v360]scale=-2:360[out360];[0:a]asplit=2[a0][a1]" \
+  -map "[out720]" -map "[out360]" -map "[a0]" -map "[a1]" \
   -c:v libx264 -preset fast -crf 28 \
   -c:a aac -b:a 128k -ac 2 \
   -f hls \
   -hls_time 4 \
   -hls_playlist_type vod \
-  -hls_segment_filename "%v/seg_%03d.ts" \
+  -hls_segment_filename "{TMP_DIR}/%v/seg_%03d.ts" \
   -var_stream_map "v:0,a:0 v:1,a:1" \
   -master_pl_name master.m3u8 \
-  "%v/index.m3u8"
+  "{TMP_DIR}/%v/index.m3u8"
 ```
 
-Key differences from the per-rendition approach:
-- `split=2` duplicates the decoded video stream, avoiding a second decode pass.
-- `-map 0:a? -map 0:a?` maps the audio stream **twice** so each variant gets its own audio output (`a:0` and `a:1`). This was the fix for the `Unable to map stream at a:1` error encountered during initial implementation — the original docs had a single `-map 0:a?` which only produced `a:0`.
-- `-var_stream_map "v:0,a:0 v:1,a:1"` pairs each video stream with its corresponding audio stream for the HLS muxer.
-- `%v` in output paths expands to variant indices (`0`, `1`). These numeric directories need to be renamed to `720p`, `360p` after ffmpeg completes, and the master playlist references need the same fix.
+### Command (no audio)
 
-Performance benefit: for a 30-minute 1080p source, this could reduce transcoding time by 10-30% compared to the per-rendition approach, directly improving time-to-stream.
+Same as above but without the `asplit` filter, without `-map "[a0]" -map "[a1]"`, with `-var_stream_map "v:0 v:1"`, and no `-c:a`/`-b:a`/`-ac` flags.
 
-Status: **not yet implemented** — needs testing with the dual audio map fix (`-map 0:a? -map 0:a?`) and the post-rename step across platforms before replacing the current approach.
+### Key design decisions
+
+- **`split=2`** duplicates the decoded video stream in memory, avoiding a second full decode pass.
+- **`asplit=2`** creates two distinct audio streams from the single input. This is critical — the alternative approaches both fail:
+  - Single `-map 0:a?` → only `a:0` exists → `Unable to map stream at a:1`
+  - Dual `-map 0:a? -map 0:a?` → maps the same elementary stream twice → `Same elementary stream found more than once in two different variant definitions`
+- **`-var_stream_map "v:0,a:0 v:1,a:1"`** pairs each video stream with its corresponding audio copy for the HLS muxer.
+- **`%v`** in output paths expands to variant indices (`0`, `1`). After ffmpeg completes, the worker renames these to `720p/` and `360p/` and rewrites the master playlist references to match.
+
+### Post-processing steps (done by worker)
+
+1. Rename `{tmp}/0/` → `{tmp}/720p/`
+2. Rename `{tmp}/1/` → `{tmp}/360p/`
+3. Rewrite `master.m3u8`: replace `0/index.m3u8` → `720p/index.m3u8`, `1/index.m3u8` → `360p/index.m3u8`
+
+### Performance
+
+For a 30-minute 1080p source, single-pass reduces transcoding time by ~10-30% compared to the per-rendition approach, directly improving time-to-stream.
+
+### Fallback
+
+For sources < 720p, the worker falls back to the per-rendition approach (single ffmpeg call for one rendition) since there's no benefit to stream splitting with only one output.
