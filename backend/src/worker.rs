@@ -210,23 +210,114 @@ async fn run_ffmpeg(
     tmp_dir: &str,
     probe: &ProbeResult,
 ) -> Result<(), String> {
-    let mut renditions: Vec<String> = Vec::new();
-
     if probe.height >= 720 {
-        transcode_rendition(source_path, tmp_dir, 720, probe.has_audio).await?;
-        renditions.push("720p".to_string());
-        transcode_rendition(source_path, tmp_dir, 360, probe.has_audio).await?;
-        renditions.push("360p".to_string());
+        transcode_dual_rendition(source_path, tmp_dir, probe.has_audio).await
     } else if probe.height >= 360 {
         transcode_rendition(source_path, tmp_dir, 360, probe.has_audio).await?;
-        renditions.push("360p".to_string());
+        generate_master_playlist(tmp_dir, &["360p"]).await
     } else {
         transcode_rendition(source_path, tmp_dir, probe.height, probe.has_audio).await?;
-        renditions.push(format!("{}p", probe.height));
+        generate_master_playlist(tmp_dir, &[&format!("{}p", probe.height)]).await
+    }
+}
+
+/// Single-pass dual-rendition: decodes source once, splits into 720p + 360p.
+/// Uses `split`/`asplit` in filter_complex so each variant gets its own stream,
+/// avoiding the "Same elementary stream" and "Unable to map stream at a:1" HLS errors.
+async fn transcode_dual_rendition(
+    source_path: &str,
+    tmp_dir: &str,
+    has_audio: bool,
+) -> Result<(), String> {
+    tokio::fs::create_dir_all(format!("{}/0", tmp_dir))
+        .await
+        .map_err(|e| format!("Failed to create variant dir 0: {}", e))?;
+    tokio::fs::create_dir_all(format!("{}/1", tmp_dir))
+        .await
+        .map_err(|e| format!("Failed to create variant dir 1: {}", e))?;
+
+    let mut filter = String::from(
+        "[0:v]split=2[v720][v360];\
+         [v720]scale=-2:720[out720];\
+         [v360]scale=-2:360[out360]"
+    );
+    if has_audio {
+        filter.push_str(";[0:a]asplit=2[a0][a1]");
     }
 
-    let refs: Vec<&str> = renditions.iter().map(|s| s.as_str()).collect();
-    generate_master_playlist(tmp_dir, &refs).await
+    let mut args = vec![
+        "-y".to_string(),
+        "-i".to_string(),
+        source_path.to_string(),
+        "-filter_complex".to_string(),
+        filter,
+        "-map".to_string(), "[out720]".to_string(),
+        "-map".to_string(), "[out360]".to_string(),
+    ];
+
+    if has_audio {
+        args.extend([
+            "-map".to_string(), "[a0]".to_string(),
+            "-map".to_string(), "[a1]".to_string(),
+        ]);
+    }
+
+    args.extend([
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "ultrafast".to_string(),
+        "-crf".to_string(), "28".to_string(),
+    ]);
+
+    if has_audio {
+        args.extend([
+            "-c:a".to_string(), "aac".to_string(),
+            "-b:a".to_string(), "128k".to_string(),
+            "-ac".to_string(), "2".to_string(),
+        ]);
+    }
+
+    let var_stream_map = if has_audio {
+        "v:0,a:0 v:1,a:1"
+    } else {
+        "v:0 v:1"
+    };
+
+    args.extend([
+        "-f".to_string(), "hls".to_string(),
+        "-hls_time".to_string(), "4".to_string(),
+        "-hls_playlist_type".to_string(), "vod".to_string(),
+        "-hls_segment_filename".to_string(),
+        format!("{}/%v/seg_%03d.ts", tmp_dir),
+        "-var_stream_map".to_string(), var_stream_map.to_string(),
+        "-master_pl_name".to_string(), "master.m3u8".to_string(),
+        format!("{}/%v/index.m3u8", tmp_dir),
+    ]);
+
+    tracing::info!("Transcoding dual rendition (720p + 360p) single-pass");
+    run_ffmpeg_command(&args).await?;
+
+    // ffmpeg outputs to numeric dirs (0/, 1/); rename to named renditions
+    tokio::fs::rename(format!("{}/0", tmp_dir), format!("{}/720p", tmp_dir))
+        .await
+        .map_err(|e| format!("Failed to rename variant 0 -> 720p: {}", e))?;
+    tokio::fs::rename(format!("{}/1", tmp_dir), format!("{}/360p", tmp_dir))
+        .await
+        .map_err(|e| format!("Failed to rename variant 1 -> 360p: {}", e))?;
+
+    // Fix master playlist: replace numeric refs with named renditions
+    let master_path = format!("{}/master.m3u8", tmp_dir);
+    let content = tokio::fs::read_to_string(&master_path)
+        .await
+        .map_err(|e| format!("Failed to read master playlist: {}", e))?;
+    let content = content
+        .replace("0/index.m3u8", "720p/index.m3u8")
+        .replace("1/index.m3u8", "360p/index.m3u8");
+    tokio::fs::write(&master_path, content)
+        .await
+        .map_err(|e| format!("Failed to rewrite master playlist: {}", e))?;
+
+    tracing::info!("Dual rendition transcode complete");
+    Ok(())
 }
 
 async fn transcode_rendition(
@@ -250,7 +341,7 @@ async fn transcode_rendition(
         "-c:v".to_string(),
         "libx264".to_string(),
         "-preset".to_string(),
-        "fast".to_string(),
+        "ultrafast".to_string(),
         "-crf".to_string(),
         "28".to_string(),
     ];
