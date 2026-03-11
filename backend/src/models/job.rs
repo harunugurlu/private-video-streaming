@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
 pub struct JobRow {
     pub id: String,
     #[sqlx(rename = "type")]

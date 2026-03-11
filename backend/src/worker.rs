@@ -32,21 +32,16 @@ pub async fn run(pool: SqlitePool) {
 }
 
 async fn handle_job(pool: &SqlitePool, job: JobRow) {
-    let stage = match process_job(pool, &job).await {
-        Ok(()) => return,
-        Err((stage, e)) => {
-            tracing::error!(
-                job_id = %job.id,
-                video_id = %job.video_id,
-                stage = %stage,
-                "Job failed: {}",
-                e
-            );
-            handle_failure(pool, &job, &stage, &e).await;
-            stage
-        }
-    };
-    let _ = stage;
+    if let Err((stage, e)) = process_job(pool, &job).await {
+        tracing::error!(
+            job_id = %job.id,
+            video_id = %job.video_id,
+            stage = %stage,
+            "Job failed: {}",
+            e
+        );
+        handle_failure(pool, &job, &stage, &e).await;
+    }
 }
 
 async fn process_job(pool: &SqlitePool, job: &JobRow) -> Result<(), (String, String)> {
